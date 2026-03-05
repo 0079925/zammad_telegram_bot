@@ -1,0 +1,59 @@
+version: "3.9"
+
+# ============================================================
+#  Zammad Integration Stack
+#  Services: telegram-gateway, nginx (reverse proxy)
+#  Zammad itself is assumed to be running separately.
+# ============================================================
+
+services:
+
+  # ── Telegram ↔ Zammad bridge ────────────────────────────────────────────────
+  telegram-gateway:
+    build:
+      context: ../telegram-gateway
+      dockerfile: Dockerfile
+    container_name: telegram-gateway
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////data/gateway.db
+    volumes:
+      - gateway-data:/data
+    networks:
+      - zammad-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Expose internally only — nginx terminates TLS
+    expose:
+      - "8080"
+
+  # ── Nginx TLS terminator ─────────────────────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: nginx-gateway
+    restart: unless-stopped
+    ports:
+      - "${NGINX_HTTP_PORT:-80}:80"
+      - "${NGINX_HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro   # mount your TLS certs here
+    networks:
+      - zammad-net
+    depends_on:
+      telegram-gateway:
+        condition: service_healthy
+
+volumes:
+  gateway-data:
+    driver: local
+
+networks:
+  zammad-net:
+    driver: bridge
