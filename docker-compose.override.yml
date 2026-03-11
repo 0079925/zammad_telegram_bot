@@ -1,0 +1,30 @@
+# ============================================================
+#  Development overrides — automatically loaded by Docker Compose
+#  when running `docker compose up` locally.
+#
+#  DO NOT commit secrets here. Use .env for local dev values.
+# ============================================================
+
+version: "3.9"
+
+services:
+  bot:
+    build:
+      target: builder       # Use the builder stage (includes dev deps)
+    environment:
+      ENVIRONMENT: development
+      LOG_LEVEL: DEBUG
+    volumes:
+      # Live-reload: mount source code so you don't need to rebuild
+      - ./src:/app/src:ro
+      - ./migrations:/app/migrations:ro
+    # Override command for development with auto-reload
+    command: ["python", "-m", "src.main"]
+
+  postgres:
+    ports:
+      - "5432:5432"         # Expose locally for DB tools (DBeaver, psql)
+
+  redis:
+    ports:
+      - "6379:6379"         # Expose locally for redis-cli inspection

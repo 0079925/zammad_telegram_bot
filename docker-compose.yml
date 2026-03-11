@@ -1,0 +1,117 @@
+# ============================================================
+#  Zammad-Telegram Bot — Production Stack
+#  Portainer-friendly: all services, volumes, networks declared.
+#
+#  Usage:
+#    cp .env.example .env   # fill in real values
+#    docker compose up -d
+# ============================================================
+
+version: "3.9"
+
+services:
+
+  # ── PostgreSQL ─────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-botuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: ${POSTGRES_DB:-zammadbot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-botuser} -d ${POSTGRES_DB:-zammadbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Redis ──────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-}
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── DB migrations (one-shot) ───────────────────────────────
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-botuser}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-zammadbot}
+    networks:
+      - internal
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Bot ────────────────────────────────────────────────────
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zammad-telegram-bot:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-botuser}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-zammadbot}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-}@redis:6379/0
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8080"
+      ENVIRONMENT: production
+    ports:
+      - "${BOT_PORT:-8080}:8080"
+    networks:
+      - internal
+      - external          # needed to reach Telegram API
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    # Limit resource consumption
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 512M
+        reservations:
+          cpus: "0.1"
+          memory: 128M
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  internal:
+    driver: bridge
+    internal: true       # postgres + redis not reachable from outside
+  external:
+    driver: bridge       # bot needs internet for Telegram API
