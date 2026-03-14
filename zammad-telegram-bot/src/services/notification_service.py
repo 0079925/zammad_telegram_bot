@@ -1,12 +1,17 @@
 """
 NotificationService — forwards agent replies from Zammad to Telegram.
 
-Called by the webhook handler when a new article arrives.
+Called by the webhook handler when a new article or ticket state change arrives.
 
-Anti-loop logic:
-    1. article.internal == True          → skip (internal note)
-    2. article.created_by_id == integration_user_id → skip (our own message)
-    3. article_id is in bot_article table → skip (belt-and-suspenders)
+Anti-loop logic (article-based webhooks):
+    1. article.internal == True                         → skip (internal note)
+    2. article.created_by_id == integration_user_id    → skip (our own message)
+    3. article_id is in bot_article table               → skip (belt-and-suspenders)
+
+State-only webhooks (article is None):
+    - Update ticket status in DB
+    - Notify user if the status transitioned to/from closed
+    - Requires a dedicated Zammad Trigger (see ARCHITECTURE.md § State-only trigger)
 
 Attachment forwarding:
     - Downloads each attachment from Zammad and sends to Telegram as a file.
@@ -14,15 +19,12 @@ Attachment forwarding:
 """
 from __future__ import annotations
 
-import io
-import mimetypes
-
 import structlog
 from aiogram import Bot
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
 from src.config import get_settings
-from src.db.models import TicketStatus
+from src.db.models import QueueType, Ticket, TicketStatus
 from src.db.repositories import IdempotencyRepository, TicketRepository
 from src.db.session import get_session
 from src.zammad.client import ZammadClient
@@ -32,6 +34,34 @@ logger = structlog.get_logger(__name__)
 
 _CLOSED_STATUSES = {TicketStatus.closed, TicketStatus.merged}
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _parse_state_name(state) -> str:
+    """Safely extract state name from Zammad's state field (dict or str)."""
+    if isinstance(state, dict):
+        return state.get("name", "open")
+    if isinstance(state, str):
+        return state
+    return "open"
+
+
+def _queue_label(queue_type: QueueType) -> str:
+    """Human-readable label for notifications."""
+    return "👔 Менеджер" if queue_type == QueueType.manager else "💬 Поддержка"
+
+
+def _reply_keyboard(queue_type: QueueType) -> InlineKeyboardMarkup:
+    """Inline button letting the user switch to the right queue context to reply."""
+    cb = f"queue:{queue_type.value}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="↩️ Ответить в этот тикет", callback_data=cb)]
+        ]
+    )
+
+
+# ── Service ───────────────────────────────────────────────────────────────────
 
 class NotificationService:
     def __init__(self, bot: Bot, zammad: ZammadClient) -> None:
@@ -45,7 +75,10 @@ class NotificationService:
     ) -> None:
         """
         Main entry-point called by the FastAPI webhook route.
-        Processes a Zammad ticket event and (if appropriate) notifies Telegram.
+
+        Two modes:
+          • article is None  → state-change-only event (ticket closed/reopened without comment)
+          • article present  → new article from agent; forward to Telegram after anti-loop checks
         """
         cfg = get_settings()
         log = logger.bind(
@@ -54,8 +87,15 @@ class NotificationService:
         )
 
         article = payload.article
+        state_name = _parse_state_name(payload.ticket.state)
+
+        from src.services.ticket_service import _zammad_state_to_status
+        new_status = _zammad_state_to_status(state_name)
+
+        # ── Mode A: state-only webhook (no article) ───────────────────────────
         if article is None:
-            log.debug("webhook_no_article_skipped")
+            log.debug("webhook_state_only", new_status=new_status.value)
+            await self._handle_state_change(payload, new_status, log, correlation_id)
             return
 
         log = log.bind(article_id=article.id)
@@ -76,7 +116,6 @@ class NotificationService:
             if await repo.is_bot_article(article.id):
                 log.debug("webhook_bot_article_skipped_by_db")
                 return
-
             db_ticket = await repo.get_by_zammad_id(payload.ticket.id)
 
         if db_ticket is None:
@@ -87,22 +126,20 @@ class NotificationService:
         log = log.bind(telegram_id=telegram_id)
 
         # ── Sync ticket status ─────────────────────────────────────────────────
-        state_name = (payload.ticket.state or {}).get("name", "open")
-        from src.services.ticket_service import _zammad_state_to_status, _status_display
-
-        new_status = _zammad_state_to_status(state_name)
         async with get_session() as session:
             repo = TicketRepository(session)
             await repo.update_status(payload.ticket.id, new_status)
 
         # ── Forward text body ─────────────────────────────────────────────────
         body = article.body_text
+        ql = _queue_label(db_ticket.queue_type)
         if body:
-            header = f"💬 <b>Ответ от поддержки</b>\n🎫 Тикет #{payload.ticket.number}\n\n"
+            header = f"{ql} <b>— ответ агента</b>\n🎫 Тикет #{payload.ticket.number}\n\n"
             await self._bot.send_message(
                 chat_id=telegram_id,
                 text=header + body,
                 parse_mode="HTML",
+                reply_markup=_reply_keyboard(db_ticket.queue_type),
             )
 
         # ── Forward attachments ───────────────────────────────────────────────
@@ -112,19 +149,13 @@ class NotificationService:
                 ticket_id=payload.ticket.id,
                 article_id=article.id,
                 attachment=attachment,
+                queue_type=db_ticket.queue_type,
                 correlation_id=correlation_id,
             )
 
         # ── Notify if ticket was closed ───────────────────────────────────────
         if new_status in _CLOSED_STATUSES:
-            await self._bot.send_message(
-                chat_id=telegram_id,
-                text=(
-                    f"✅ Тикет <b>#{payload.ticket.number}</b> закрыт.\n"
-                    "Если вопрос возник снова — нажмите кнопку ниже для нового обращения."
-                ),
-                parse_mode="HTML",
-            )
+            await self._send_closed_notification(telegram_id, payload.ticket.number, db_ticket.queue_type)
 
         async with get_session() as session:
             await IdempotencyRepository(session).write_log(
@@ -138,13 +169,85 @@ class NotificationService:
 
     # ── Private ───────────────────────────────────────────────────────────────
 
+    async def _handle_state_change(
+        self,
+        payload: ZammadWebhookPayload,
+        new_status: TicketStatus,
+        log,
+        correlation_id: str | None,
+    ) -> None:
+        """Handle a state-only webhook (no article — ticket was closed/reopened silently)."""
+        async with get_session() as session:
+            repo = TicketRepository(session)
+            db_ticket = await repo.get_by_zammad_id(payload.ticket.id)
+            if db_ticket is None:
+                log.warning("webhook_state_only_ticket_not_found")
+                return
+
+            old_status = db_ticket.status
+            await repo.update_status(payload.ticket.id, new_status)
+
+        telegram_id = db_ticket.telegram_id
+
+        # Notify on meaningful transitions only
+        if new_status == old_status:
+            log.debug("webhook_state_unchanged", status=new_status.value)
+            return
+
+        if new_status in _CLOSED_STATUSES:
+            await self._send_closed_notification(telegram_id, payload.ticket.number, db_ticket.queue_type)
+        elif old_status in _CLOSED_STATUSES and new_status not in _CLOSED_STATUSES:
+            # Ticket was reopened
+            ql = _queue_label(db_ticket.queue_type)
+            await self._bot.send_message(
+                chat_id=telegram_id,
+                text=(
+                    f"🔄 {ql}: тикет <b>#{payload.ticket.number}</b> переоткрыт.\n"
+                    "Вы можете продолжить переписку."
+                ),
+                parse_mode="HTML",
+                reply_markup=_reply_keyboard(db_ticket.queue_type),
+            )
+
+        log.info(
+            "state_change_notified",
+            old=old_status.value,
+            new=new_status.value,
+            telegram_id=telegram_id,
+        )
+
+    async def _send_closed_notification(
+        self,
+        telegram_id: int,
+        ticket_number: str,
+        queue_type: QueueType,
+    ) -> None:
+        ql = _queue_label(queue_type)
+        await self._bot.send_message(
+            chat_id=telegram_id,
+            text=(
+                f"✅ {ql}: тикет <b>#{ticket_number}</b> закрыт.\n"
+                "Если вопрос возник снова — нажмите кнопку ниже для нового обращения."
+            ),
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(
+                        text="🆕 Создать новое обращение",
+                        callback_data=f"queue:{queue_type.value}",
+                    )]
+                ]
+            ),
+        )
+
     async def _forward_attachment(
         self,
         *,
         telegram_id: int,
         ticket_id: int,
         article_id: int,
-        attachment,  # ZammadAttachmentSchema
+        attachment,
+        queue_type: QueueType,
         correlation_id: str | None,
     ) -> None:
         log = logger.bind(
@@ -168,9 +271,12 @@ class NotificationService:
             log.info("attachment_forwarded_to_telegram")
         except Exception as exc:
             log.warning("attachment_forward_failed", error=str(exc))
+            ql = _queue_label(queue_type)
             await self._bot.send_message(
                 chat_id=telegram_id,
-                text=f"📎 Агент прислал файл: <code>{attachment.filename}</code>\n"
-                     "(Не удалось скачать — обратитесь в поддержку)",
+                text=(
+                    f"{ql} — агент прислал файл: <code>{attachment.filename}</code>\n"
+                    "(Не удалось скачать — обратитесь в поддержку)"
+                ),
                 parse_mode="HTML",
             )
