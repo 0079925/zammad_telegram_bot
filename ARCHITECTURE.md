@@ -23,21 +23,38 @@ Zammad → Trigger → HTTP POST → наш FastAPI сервер → Notificatio
 - Каждый новый пользователь увеличивал бы нагрузку на polling
 - Webhook: O(1) при любом количестве пользователей, реальный real-time
 
-**Как настроить Trigger в Zammad:**
+**Как настроить Trigger в Zammad — нужно ДВА триггера:**
+
 ```
+# Триггер 1: новый публичный ответ агента
 Conditions:  Article → created
              Article → visibility = public  (только публичные)
 Action:      HTTP Request POST https://<bot-host>:<port>/webhook/zammad
              Authorization: Bearer <ZAMMAD_WEBHOOK_SECRET>
              Payload: all ticket + article fields
+
+# Триггер 2: смена статуса тикета (закрыт / переоткрыт) БЕЗ статьи
+Conditions:  Ticket → state → changed
+Action:      HTTP Request POST https://<bot-host>:<port>/webhook/zammad
+             Authorization: Bearer <ZAMMAD_WEBHOOK_SECRET>
+             Payload: all ticket fields  (article — пусто)
 ```
+
+Без Триггера 2 бот не узнает о закрытии тикета, если агент закрыл его без публичного ответа.
 
 ## Механизм отправки ответов в Telegram
 
 `NotificationService.handle_webhook()` вызывает `bot.send_message(chat_id=ticket.telegram_id)`.
 
 `telegram_id` берётся из таблицы `ticket` → `telegram_user.telegram_id`.
-Это прямое соответствие: один Zammad ticket_id → один Telegram chat_id.
+Одному `zammad_ticket_id` соответствует один `telegram_id`.
+
+Заголовок уведомления формируется по `db_ticket.queue_type`:
+- `support` → `💬 Поддержка — ответ агента`
+- `manager` → `👔 Менеджер — ответ агента`
+
+Это позволяет пользователю различать ответы, даже если у него одновременно
+открыты оба тикета (в поддержку и к менеджеру).
 
 ## Стратегия идемпотентности
 
@@ -68,10 +85,13 @@ Action:      HTTP Request POST https://<bot-host>:<port>/webhook/zammad
 
 ## Анти-петля Telegram → Zammad → Telegram
 
-Три независимых рубежа (каждый достаточен сам по себе):
-
 ```
 Webhook получен
+      │
+      ├─► article is None?                   → State-only path
+      │       ├─► update ticket status in DB
+      │       ├─► notify if closed/reopened
+      │       └─► done ✓
       │
       ├─► article.internal == True?          → DROP (внутренняя заметка)
       │
@@ -81,6 +101,8 @@ Webhook получен
       ├─► article.id ∈ bot_article table?    → DROP (belt-and-suspenders)
       │
       └─► Forwarded to Telegram ✓
+           + заголовок с лейблом очереди (💬 Поддержка / 👔 Менеджер)
+           + кнопка «↩️ Ответить в этот тикет»
 ```
 
 ## Границы слоёв

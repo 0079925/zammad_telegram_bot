@@ -27,10 +27,19 @@ class TicketRepository:
         return result.scalar_one_or_none()
 
     async def get_by_zammad_id(self, zammad_ticket_id: int) -> Ticket | None:
+        """Return the most recent ticket for a given Zammad ticket ID.
+
+        Uses scalars().first() (ordered by created_at DESC) so that even if a
+        duplicate row somehow exists we don't blow up with MultipleResultsFound.
+        """
+        from sqlalchemy import desc
+
         result = await self._session.execute(
-            select(Ticket).where(Ticket.zammad_ticket_id == zammad_ticket_id)
+            select(Ticket)
+            .where(Ticket.zammad_ticket_id == zammad_ticket_id)
+            .order_by(desc(Ticket.created_at))
         )
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def create(
         self,

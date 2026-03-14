@@ -169,7 +169,7 @@ class ZammadClient:
         group: str,
         customer_id: int,
         body: str,
-        article_type: str = "note",
+        article_type: str = "web",
     ) -> ZammadTicketSchema:
         payload = {
             "title": title,
@@ -196,7 +196,7 @@ class ZammadClient:
         *,
         ticket_id: int,
         body: str,
-        article_type: str = "note",
+        article_type: str = "web",
         internal: bool = False,
         attachments: list[dict[str, str]] | None = None,
     ) -> ZammadArticleSchema:
