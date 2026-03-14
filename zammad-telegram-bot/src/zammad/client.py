@@ -186,7 +186,11 @@ class ZammadClient:
         return ZammadTicketSchema(**resp.json())
 
     async def get_ticket(self, ticket_id: int) -> ZammadTicketSchema:
-        resp = await self._request("GET", f"/tickets/{ticket_id}")
+        # expand=true forces Zammad to return state as a full object
+        # {"id": 4, "name": "closed"} instead of just state_id: 4
+        resp = await self._request(
+            "GET", f"/tickets/{ticket_id}", params={"expand": "true"}
+        )
         return ZammadTicketSchema(**resp.json())
 
     # ── Articles ──────────────────────────────────────────────────────────────
