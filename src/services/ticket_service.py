@@ -1,11 +1,5 @@
 """
-TicketService — manages Zammad ticket lifecycle driven by Telegram events.
-
-Responsibilities:
-    - Find or create a ticket for a user+queue
-    - Add text/attachment articles to an existing ticket
-    - Track article IDs created by the bot (loop prevention)
-    - Handle ticket status transitions
+TicketService - manages Zammad ticket lifecycle driven by Telegram events.
 """
 from __future__ import annotations
 
@@ -56,8 +50,6 @@ class TicketService:
     def __init__(self, zammad: ZammadClient) -> None:
         self._zammad = zammad
 
-    # ── Open / get active ticket ──────────────────────────────────────────────
-
     async def get_or_create_ticket(
         self,
         *,
@@ -67,31 +59,20 @@ class TicketService:
         initial_message: str,
         correlation_id: str | None = None,
     ) -> tuple[ZammadTicketSchema, bool]:
-        """
-        Returns (ticket, created_flag).
-        If there is an active, non-closed ticket — returns it.
-        Otherwise creates a new one.
-        """
         log = logger.bind(telegram_id=telegram_id, queue=queue.value, correlation_id=correlation_id)
-
         async with get_session() as session:
             repo = TicketRepository(session)
             existing = await repo.get_active(telegram_id, queue)
 
             if existing and existing.status not in _CLOSED_STATUSES:
-                # Refresh status from Zammad
                 zammad_ticket = await self._zammad.get_ticket(existing.zammad_ticket_id)
-                real_status = _zammad_state_to_status(
-                    (zammad_ticket.state or {}).get("name", "open")
-                )
+                real_status = _zammad_state_to_status((zammad_ticket.state or {}).get("name", "open"))
                 if real_status in _CLOSED_STATUSES:
                     await repo.update_status(existing.zammad_ticket_id, real_status)
-                    # Fall through to creation below
                 else:
                     log.info("ticket_reused", zammad_ticket_id=existing.zammad_ticket_id)
                     return zammad_ticket, False
 
-            # Create a new ticket in Zammad
             group = _queue_to_group(queue)
             subject = "Обращение через Telegram"
             zammad_ticket = await self._zammad.create_ticket(
@@ -101,16 +82,12 @@ class TicketService:
                 body=initial_message,
             )
             idem_repo = IdempotencyRepository(session)
-            db_ticket = await repo.create(
+            await repo.create(
                 telegram_id=telegram_id,
                 zammad_ticket_id=zammad_ticket.id,
                 zammad_ticket_number=zammad_ticket.number,
                 queue_type=queue,
             )
-            # The first article was created with the ticket — record it
-            # We don't have the article ID here; Zammad returns it separately.
-            # We mark the ticket as "initial article pending" by convention:
-            # the article body equals initial_message, so we won't forward it.
             await idem_repo.write_log(
                 event_type="ticket_created",
                 telegram_id=telegram_id,
@@ -118,14 +95,8 @@ class TicketService:
                 correlation_id=correlation_id,
                 payload={"number": zammad_ticket.number, "group": group, "queue": queue.value},
             )
-            log.info(
-                "ticket_created",
-                zammad_ticket_id=zammad_ticket.id,
-                number=zammad_ticket.number,
-            )
+            log.info("ticket_created", zammad_ticket_id=zammad_ticket.id, number=zammad_ticket.number)
             return zammad_ticket, True
-
-    # ── Add messages ──────────────────────────────────────────────────────────
 
     async def add_text_article(
         self,
@@ -135,16 +106,13 @@ class TicketService:
         text: str,
         correlation_id: str | None = None,
     ) -> bool:
-        """Add a text article to the active ticket.  Returns False if no ticket."""
         async with get_session() as session:
             repo = TicketRepository(session)
             ticket = await repo.get_active(telegram_id, queue)
             if not ticket:
                 return False
 
-            article = await self._zammad.add_article(
-                ticket_id=ticket.zammad_ticket_id, body=text
-            )
+            article = await self._zammad.add_article(ticket_id=ticket.zammad_ticket_id, body=text)
             await repo.record_bot_article(article.id, ticket.id)
             await IdempotencyRepository(session).write_log(
                 event_type="article_sent",
@@ -165,7 +133,6 @@ class TicketService:
         content_type: str,
         correlation_id: str | None = None,
     ) -> bool:
-        """Upload a file attachment to the active ticket. Returns False if no ticket."""
         async with get_session() as session:
             repo = TicketRepository(session)
             ticket = await repo.get_active(telegram_id, queue)
@@ -189,12 +156,60 @@ class TicketService:
             )
         return True
 
-    # ── Status helpers ────────────────────────────────────────────────────────
+    async def close_active_ticket(
+        self,
+        *,
+        telegram_id: int,
+        queue: QueueType,
+        correlation_id: str | None = None,
+    ) -> str | None:
+        async with get_session() as session:
+            repo = TicketRepository(session)
+            ticket = await repo.get_active(telegram_id, queue)
+            if not ticket:
+                return None
 
-    async def get_active_ticket_info(
-        self, telegram_id: int, queue: QueueType
-    ) -> tuple[str, str] | None:
-        """Return (ticket_number, status_label) or None."""
+            try:
+                await self._zammad._request("PUT", f"/tickets/{ticket.zammad_ticket_id}", json={"state": "closed"})
+            except Exception as exc:
+                logger.warning("zammad_close_failed", error=str(exc), zammad_ticket_id=ticket.zammad_ticket_id)
+
+            await repo.update_status(ticket.zammad_ticket_id, TicketStatus.closed)
+            await IdempotencyRepository(session).write_log(
+                event_type="ticket_closed_by_user",
+                telegram_id=telegram_id,
+                zammad_ticket_id=ticket.zammad_ticket_id,
+                correlation_id=correlation_id,
+            )
+            return ticket.zammad_ticket_number
+
+    async def list_recent_tickets(self, telegram_id: int, limit: int = 8) -> list[dict]:
+        async with get_session() as session:
+            repo = TicketRepository(session)
+            tickets = await repo.list_recent(telegram_id, limit=limit)
+
+        items: list[dict] = []
+        for ticket in tickets:
+            items.append(
+                {
+                    "zammad_ticket_id": ticket.zammad_ticket_id,
+                    "number": ticket.zammad_ticket_number,
+                    "queue": ticket.queue_type,
+                    "status": ticket.status,
+                    "is_active": ticket.is_active,
+                }
+            )
+        return items
+
+    async def activate_ticket_context(self, telegram_id: int, zammad_ticket_id: int) -> tuple[QueueType, str] | None:
+        async with get_session() as session:
+            repo = TicketRepository(session)
+            ticket = await repo.activate_by_zammad_id(telegram_id, zammad_ticket_id)
+            if ticket is None or ticket.status in _CLOSED_STATUSES:
+                return None
+            return ticket.queue_type, ticket.zammad_ticket_number
+
+    async def get_active_ticket_info(self, telegram_id: int, queue: QueueType) -> tuple[str, str] | None:
         async with get_session() as session:
             repo = TicketRepository(session)
             ticket = await repo.get_active(telegram_id, queue)
@@ -203,7 +218,6 @@ class TicketService:
             return ticket.zammad_ticket_number, _status_display(ticket.status)
 
     async def sync_ticket_status(self, zammad_ticket_id: int) -> TicketStatus | None:
-        """Pull current status from Zammad and persist it."""
         try:
             zammad_ticket = await self._zammad.get_ticket(zammad_ticket_id)
         except Exception:

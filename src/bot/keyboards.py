@@ -13,8 +13,9 @@ from aiogram.types import (
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="💬 Написать в поддержку", callback_data="queue:support")],
-            [InlineKeyboardButton(text="👔 Написать менеджеру", callback_data="queue:manager")],
+            [InlineKeyboardButton(text="💬 Поддержка", callback_data="queue:support")],
+            [InlineKeyboardButton(text="👔 Менеджер", callback_data="queue:manager")],
+            [InlineKeyboardButton(text="📂 Мои обращения", callback_data="ticket:list")],
         ]
     )
 
@@ -44,7 +45,10 @@ def back_to_menu_keyboard() -> InlineKeyboardMarkup:
 def active_ticket_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="📋 Статус тикета", callback_data="ticket:status")],
-            [InlineKeyboardButton(text="🔄 Сменить направление", callback_data="menu:main")],
+            [InlineKeyboardButton(text="📋 Статус", callback_data="ticket:status")],
+            [InlineKeyboardButton(text="✅ Закрыть текущее", callback_data="ticket:close")],
+            [InlineKeyboardButton(text="🆕 Новое обращение", callback_data="ticket:new")],
+            [InlineKeyboardButton(text="📂 Мои обращения", callback_data="ticket:list")],
+            [InlineKeyboardButton(text="🏠 Главное меню", callback_data="menu:main")],
         ]
     )

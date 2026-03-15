@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import BotArticle, QueueType, Ticket, TicketStatus
@@ -26,20 +26,49 @@ class TicketRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_active_any(self, telegram_id: int) -> Ticket | None:
+        """Return the latest active ticket across all queues."""
+        result = await self._session.execute(
+            select(Ticket)
+            .where(
+                Ticket.telegram_id == telegram_id,
+                Ticket.is_active == True,  # noqa: E712
+            )
+            .order_by(desc(Ticket.updated_at))
+        )
+        return result.scalars().first()
+
     async def get_by_zammad_id(self, zammad_ticket_id: int) -> Ticket | None:
-        """Return the most recent ticket for a given Zammad ticket ID.
-
-        Uses scalars().first() (ordered by created_at DESC) so that even if a
-        duplicate row somehow exists we don't blow up with MultipleResultsFound.
-        """
-        from sqlalchemy import desc
-
+        """Return the most recent ticket for a given Zammad ticket ID."""
         result = await self._session.execute(
             select(Ticket)
             .where(Ticket.zammad_ticket_id == zammad_ticket_id)
             .order_by(desc(Ticket.created_at))
         )
         return result.scalars().first()
+
+    async def list_recent(self, telegram_id: int, limit: int = 10) -> list[Ticket]:
+        result = await self._session.execute(
+            select(Ticket)
+            .where(Ticket.telegram_id == telegram_id)
+            .order_by(desc(Ticket.updated_at))
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def activate_by_zammad_id(self, telegram_id: int, zammad_ticket_id: int) -> Ticket | None:
+        target = await self.get_by_zammad_id(zammad_ticket_id)
+        if target is None or target.telegram_id != telegram_id:
+            return None
+
+        active_same_queue = await self.get_active(telegram_id, target.queue_type)
+        if active_same_queue and active_same_queue.id != target.id:
+            active_same_queue.is_active = False
+
+        if target.status not in (TicketStatus.closed, TicketStatus.merged):
+            target.is_active = True
+
+        return target
 
     async def create(
         self,
