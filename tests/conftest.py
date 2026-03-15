@@ -22,6 +22,23 @@ from src.zammad.schemas import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _default_env(monkeypatch):
+    """Provide required settings defaults for tests that instantiate services directly."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test:token")
+    monkeypatch.setenv("ZAMMAD_URL", "https://zammad.example.com")
+    monkeypatch.setenv("ZAMMAD_HTTP_TOKEN", "test_token")
+    monkeypatch.setenv("ZAMMAD_WEBHOOK_SECRET", "test_webhook_secret")
+    monkeypatch.setenv("ZAMMAD_INTEGRATION_USER_ID", "5")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 # ── Zammad fixtures ───────────────────────────────────────────────────────────
 
 @pytest.fixture

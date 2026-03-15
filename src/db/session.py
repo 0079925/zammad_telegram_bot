@@ -26,12 +26,16 @@ def _get_engine():  # type: ignore[return]
     global _engine
     if _engine is None:
         settings = get_settings()
+        engine_kwargs: dict = {
+            "echo": settings.is_development,
+            "pool_pre_ping": True,
+        }
+        # SQLite does not support pool_size/max_overflow options used by server DBs.
+        if not settings.database_url.startswith("sqlite+"):
+            engine_kwargs.update({"pool_size": 10, "max_overflow": 20})
         _engine = create_async_engine(
             settings.database_url,
-            echo=settings.is_development,
-            pool_size=10,
-            max_overflow=20,
-            pool_pre_ping=True,
+            **engine_kwargs,
         )
     return _engine
 

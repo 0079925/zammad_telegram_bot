@@ -10,7 +10,6 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
-from sqlalchemy.dialects import postgresql
 
 revision: str = "0001"
 down_revision: Union[str, None] = None
@@ -30,13 +29,13 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("telegram_id"),
@@ -44,7 +43,7 @@ def upgrade() -> None:
 
     op.create_table(
         "ticket",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("telegram_id", sa.BigInteger(), nullable=False),
         sa.Column("zammad_ticket_id", sa.Integer(), nullable=False),
         sa.Column("zammad_ticket_number", sa.String(32), nullable=False),
@@ -65,13 +64,13 @@ def upgrade() -> None:
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.Column(
             "updated_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.Column("closed_at", sa.DateTime(timezone=True), nullable=True),
@@ -88,11 +87,11 @@ def upgrade() -> None:
     op.create_table(
         "bot_article",
         sa.Column("article_id", sa.Integer(), nullable=False),
-        sa.Column("ticket_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("ticket_id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.ForeignKeyConstraint(["ticket_id"], ["ticket.id"], ondelete="CASCADE"),
@@ -105,7 +104,7 @@ def upgrade() -> None:
         sa.Column(
             "processed_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("update_id"),
@@ -113,16 +112,16 @@ def upgrade() -> None:
 
     op.create_table(
         "integration_log",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("id", sa.Uuid(as_uuid=True), nullable=False),
         sa.Column("event_type", sa.String(64), nullable=False),
         sa.Column("telegram_id", sa.BigInteger(), nullable=True),
         sa.Column("zammad_ticket_id", sa.Integer(), nullable=True),
         sa.Column("correlation_id", sa.String(64), nullable=True),
-        sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
+        sa.Column("payload", sa.JSON(), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
+            server_default=sa.text("CURRENT_TIMESTAMP"),
             nullable=False,
         ),
         sa.PrimaryKeyConstraint("id"),
@@ -143,5 +142,3 @@ def downgrade() -> None:
     op.drop_index("ix_ticket_telegram_id", "ticket")
     op.drop_table("ticket")
     op.drop_table("telegram_user")
-    op.execute("DROP TYPE IF EXISTS queuetype")
-    op.execute("DROP TYPE IF EXISTS ticketstatus")

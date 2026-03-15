@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     zammad_group_manager: str = "manager"
 
     # ── Database ──────────────────────────────────────────────────────────────
-    database_url: str  # postgresql+asyncpg://...
+    database_url: str = "sqlite+aiosqlite:///./data/app.db"
 
     # ── Redis ─────────────────────────────────────────────────────────────────
     redis_url: str = "redis://redis:6379/0"
