@@ -46,6 +46,21 @@ def _status_display(status: TicketStatus) -> str:
     return labels.get(status, status.value)
 
 
+def _build_ticket_subject(
+    telegram_id: int,
+    telegram_username: str | None,
+    telegram_display_name: str | None,
+) -> str:
+    if telegram_username:
+        actor = f"@{telegram_username.strip().lstrip('@')}"
+    elif telegram_display_name:
+        actor = " ".join(telegram_display_name.split())
+    else:
+        actor = f"id:{telegram_id}"
+
+    return f"{actor} | Обращение через Telegram"
+
+
 class TicketService:
     def __init__(self, zammad: ZammadClient) -> None:
         self._zammad = zammad
@@ -57,6 +72,8 @@ class TicketService:
         zammad_user_id: int,
         queue: QueueType,
         initial_message: str,
+        telegram_username: str | None = None,
+        telegram_display_name: str | None = None,
         correlation_id: str | None = None,
     ) -> tuple[ZammadTicketSchema, bool]:
         log = logger.bind(telegram_id=telegram_id, queue=queue.value, correlation_id=correlation_id)
@@ -74,7 +91,11 @@ class TicketService:
                     return zammad_ticket, False
 
             group = _queue_to_group(queue)
-            subject = "Обращение через Telegram"
+            subject = _build_ticket_subject(
+                telegram_id=telegram_id,
+                telegram_username=telegram_username,
+                telegram_display_name=telegram_display_name,
+            )
             zammad_ticket = await self._zammad.create_ticket(
                 title=subject,
                 group=group,

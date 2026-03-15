@@ -57,6 +57,8 @@ async def handle_queue_select(
             zammad_user_id=zammad_user_id,
             queue=queue,
             initial_message="Новое обращение через Telegram.",
+            telegram_username=call.from_user.username,
+            telegram_display_name=call.from_user.full_name,
             correlation_id=correlation_id,
         )
     except Exception as exc:
