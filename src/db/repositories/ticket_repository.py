@@ -61,12 +61,14 @@ class TicketRepository:
         if target is None or target.telegram_id != telegram_id:
             return None
 
+        if target.status in (TicketStatus.closed, TicketStatus.merged):
+            return None
+
         active_same_queue = await self.get_active(telegram_id, target.queue_type)
         if active_same_queue and active_same_queue.id != target.id:
             active_same_queue.is_active = False
 
-        if target.status not in (TicketStatus.closed, TicketStatus.merged):
-            target.is_active = True
+        target.is_active = True
 
         return target
 
