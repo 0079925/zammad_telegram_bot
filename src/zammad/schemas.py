@@ -6,7 +6,7 @@ Unknown fields from Zammad responses are silently ignored (extra="ignore").
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ZammadUserSchema(BaseModel):
@@ -30,6 +30,20 @@ class ZammadTicketSchema(BaseModel):
     state: dict | None = None  # {"name": "open", ...}
     group: dict | None = None  # {"name": "Support L1", ...}
     customer_id: int | None = None
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def _normalize_state(cls, value):
+        if isinstance(value, str):
+            return {"name": value}
+        return value
+
+    @field_validator("group", mode="before")
+    @classmethod
+    def _normalize_group(cls, value):
+        if isinstance(value, str):
+            return {"name": value}
+        return value
 
 
 class ZammadAttachmentSchema(BaseModel):
@@ -78,6 +92,13 @@ class WebhookTicket(BaseModel):
     number: str
     title: str
     state: dict | None = None
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def _normalize_state(cls, value):
+        if isinstance(value, str):
+            return {"name": value}
+        return value
 
 
 class WebhookArticle(BaseModel):
