@@ -59,6 +59,11 @@ async def zammad_webhook(
         "webhook_received",
         has_article=isinstance(body, dict) and body.get("article") is not None,
         keys=list(body.keys()) if isinstance(body, dict) else None,
+        ticket_state=body.get("ticket", {}).get("state") if isinstance(body, dict) else None,
+        ticket_id=body.get("ticket", {}).get("id") if isinstance(body, dict) else None,
+        ticket_group=body.get("ticket", {}).get("group") if isinstance(body, dict) else None,
+        article_internal=body.get("article", {}).get("internal") if isinstance(body, dict) and body.get("article") else None,
+        article_created_by_id=body.get("article", {}).get("created_by_id") if isinstance(body, dict) and body.get("article") else None,
     )
 
     try:

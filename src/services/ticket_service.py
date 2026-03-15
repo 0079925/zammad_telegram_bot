@@ -231,3 +231,46 @@ class TicketService:
 
     def status_display(self, status: TicketStatus) -> str:
         return _status_display(status)
+
+    async def sync_status_by_queue(
+        self,
+        telegram_id: int,
+        queue: QueueType,
+    ) -> tuple[str, str, bool] | None:
+        """
+        Find the most recent ticket for user+queue (active or not),
+        fetch fresh status from Zammad, update local DB.
+        Returns (ticket_number, status_label, was_already_closed) or None.
+        Used when local DB shows no active ticket but user might have an
+        agent-closed ticket whose webhook never arrived.
+        """
+        async with get_session() as session:
+            repo = TicketRepository(session)
+            recent = await repo.list_recent(telegram_id, limit=8)
+
+        queue_tickets = [t for t in recent if t.queue_type == queue]
+        if not queue_tickets:
+            return None
+
+        ticket = queue_tickets[0]
+        try:
+            zammad_ticket = await self._zammad.get_ticket(ticket.zammad_ticket_id)
+            state_name = (zammad_ticket.state or {}).get("name", "open")
+            fresh_status = _zammad_state_to_status(state_name)
+            async with get_session() as session:
+                repo = TicketRepository(session)
+                await repo.update_status(ticket.zammad_ticket_id, fresh_status)
+            logger.info(
+                "status_synced_from_zammad",
+                zammad_ticket_id=ticket.zammad_ticket_id,
+                number=ticket.zammad_ticket_number,
+                fresh_status=fresh_status.value,
+                queue=queue.value,
+                telegram_id=telegram_id,
+            )
+        except Exception as exc:
+            logger.warning("status_sync_failed", error=str(exc), zammad_ticket_id=ticket.zammad_ticket_id)
+            fresh_status = ticket.status
+
+        was_closed = fresh_status in _CLOSED_STATUSES
+        return ticket.zammad_ticket_number, _status_display(fresh_status), was_closed

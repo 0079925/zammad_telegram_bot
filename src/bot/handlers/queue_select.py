@@ -130,7 +130,25 @@ async def handle_ticket_status(
     queue = QueueType(queue_raw)
     info = await ticket_service.get_active_ticket_info(call.from_user.id, queue)
     if info is None:
-        await call.message.answer("Активное обращение не найдено.")
+        # Ticket may have been closed by agent — sync from Zammad to confirm
+        synced = await ticket_service.sync_status_by_queue(call.from_user.id, queue)
+        if synced is None:
+            await call.message.answer("Активное обращение не найдено.")
+            return
+        number, status_label, was_closed = synced
+        if was_closed:
+            await state.set_state(UserFlow.main_menu)
+            await call.message.answer(
+                f"🔴 Тикет <b>#{number}</b> закрыт (убран менеджером).\n"
+                "Если вопрос не решён — создайте новое обращение:",
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
+        await call.message.answer(
+            f"🎫 <b>Тикет #{number}</b>\n📊 <b>Статус:</b> {status_label}",
+            parse_mode="HTML",
+        )
         return
 
     number, status_label = info
@@ -163,6 +181,17 @@ async def handle_ticket_close(
         correlation_id=correlation_id,
     )
     if number is None:
+        # Check if already closed by agent
+        synced = await ticket_service.sync_status_by_queue(call.from_user.id, QueueType(queue_raw))
+        if synced and synced[2]:  # was_closed=True
+            await state.set_state(UserFlow.main_menu)
+            await call.message.answer(
+                f"🔴 Тикет <b>#{synced[0]}</b> уже закрыт менеджером.\n"
+                "Если вопрос не решён — создайте новое:",
+                parse_mode="HTML",
+                reply_markup=main_menu_keyboard(),
+            )
+            return
         await call.message.answer("Не нашёл активного обращения.")
         return
 

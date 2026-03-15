@@ -94,7 +94,7 @@ class NotificationService:
 
         # ── Mode A: state-only webhook (no article) ───────────────────────────
         if article is None:
-            log.debug("webhook_state_only", new_status=new_status.value)
+            log.info("webhook_state_only", new_status=new_status.value, zammad_ticket_id=payload.ticket.id, ticket_state_raw=payload.ticket.state)
             await self._handle_state_change(payload, new_status, log, correlation_id)
             return
 
@@ -155,6 +155,7 @@ class NotificationService:
 
         # ── Notify if ticket was closed ───────────────────────────────────────
         if new_status in _CLOSED_STATUSES:
+            log.info("article_path_close_notify", new_status=new_status.value, telegram_id=telegram_id, ticket_number=payload.ticket.number)
             await self._send_closed_notification(telegram_id, payload.ticket.number, db_ticket.queue_type)
 
         async with get_session() as session:
@@ -190,11 +191,13 @@ class NotificationService:
         telegram_id = db_ticket.telegram_id
 
         # Notify on meaningful transitions only
+        log.info("webhook_state_transition", old=old_status.value, new=new_status.value, telegram_id=telegram_id)
         if new_status == old_status:
-            log.debug("webhook_state_unchanged", status=new_status.value)
+            log.info("webhook_state_unchanged", status=new_status.value)
             return
 
         if new_status in _CLOSED_STATUSES:
+            log.info("sending_closed_notification", telegram_id=telegram_id, ticket_number=payload.ticket.number, queue=db_ticket.queue_type.value)
             await self._send_closed_notification(telegram_id, payload.ticket.number, db_ticket.queue_type)
         elif old_status in _CLOSED_STATUSES and new_status not in _CLOSED_STATUSES:
             # Ticket was reopened
@@ -222,6 +225,7 @@ class NotificationService:
         ticket_number: str,
         queue_type: QueueType,
     ) -> None:
+        logger.info("closed_notification_sending", telegram_id=telegram_id, ticket_number=ticket_number, queue=queue_type.value)
         ql = _queue_label(queue_type)
         await self._bot.send_message(
             chat_id=telegram_id,
