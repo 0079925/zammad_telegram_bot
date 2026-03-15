@@ -1,4 +1,4 @@
-"""
+﻿"""
 FastAPI router for the Zammad webhook endpoint.
 
 Security:
@@ -7,7 +7,7 @@ Security:
     We validate the secret on every request and return 401 on mismatch.
 
 Anti-loop:
-    See NotificationService — it checks created_by_id and bot_article table.
+    See NotificationService  it checks created_by_id and bot_article table.
 """
 from __future__ import annotations
 
@@ -55,6 +55,12 @@ async def zammad_webhook(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
+    logger.info(
+        "webhook_received",
+        has_article=isinstance(body, dict) and body.get("article") is not None,
+        keys=list(body.keys()) if isinstance(body, dict) else None,
+    )
+
     try:
         payload = ZammadWebhookPayload.model_validate(body)
     except ValidationError as exc:
@@ -65,7 +71,6 @@ async def zammad_webhook(
         await notification_service.handle_webhook(payload, correlation_id=correlation_id)
     except Exception as exc:
         logger.error("webhook_handler_error", error=str(exc), correlation_id=correlation_id)
-        # Always return 200 to prevent Zammad from retrying indefinitely
         return {"status": "error", "detail": "internal error"}
 
     structlog.contextvars.unbind_contextvars("correlation_id")
